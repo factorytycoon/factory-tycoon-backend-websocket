@@ -85,6 +85,10 @@ app = FastAPI()
 manager = ConnectionManager()
 reader = RedisStreamReader(manager)
 
+@app.get("/")
+async def root():
+    return {"status": "ok"}
+
 @app.websocket(WEBSOCKET_PATH)
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
