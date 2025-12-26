@@ -5,8 +5,10 @@ import os
 import time
 import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from contextlib import asynccontextmanager
 import uvicorn
 from threading import Thread
+import json
 
 load_dotenv()
 REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
@@ -51,6 +53,7 @@ class RedisStreamReader:
             self.client.xgroup_create(name=REDIS_STREAM_KEY, groupname=CONSUMER_GROUP, id='0', mkstream=True)
         except redis.exceptions.ResponseError as e:
             if 'BUSYGROUP' in str(e):
+                print("already exists consumer group")
                 pass  # 이미 그룹이 있으면 무시
             else:
                 raise
@@ -74,14 +77,22 @@ class RedisStreamReader:
                 for stream, msgs in messages:
                     for msg_id, msg in msgs:
                         print(f"Received: {msg}")
-                        await self.manager.broadcast(str(msg))
+                        await self.manager.broadcast(json.dumps(msg))
                         self.client.xack(REDIS_STREAM_KEY, CONSUMER_GROUP, msg_id)
             except Exception as e:
                 print(f"Error: {e}")
                 await asyncio.sleep(2)
 
 
-app = FastAPI()
+
+# FastAPI lifespan 이벤트 핸들러로 Redis 리스너 등록
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    loop = asyncio.get_event_loop()
+    loop.create_task(reader.listen())
+    yield
+
+app = FastAPI(lifespan=lifespan)
 manager = ConnectionManager()
 reader = RedisStreamReader(manager)
 
@@ -94,15 +105,12 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()  # 클라이언트로부터의 메시지는 무시
+            await asyncio.sleep(1)  # Keep the connection alive
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
-def start_redis_listener():
-    asyncio.run(reader.listen())
+
 
 if __name__ == "__main__":
-    # Redis 리스너를 별도 스레드에서 실행
-    t = Thread(target=start_redis_listener, daemon=True)
-    t.start()
+    import uvicorn
     uvicorn.run(app, host=WEBSOCKET_HOST, port=WEBSOCKET_PORT)
