@@ -9,6 +9,7 @@ COPY redis_stream_reader.py ./
 # COPY requirements.txt ./
 # RUN pip install --no-cache-dir -r requirements.txt
 
-RUN pip install redis python-dotenv fastapi uvicorn[standard]
+RUN pip install redis python-dotenv fastapi uvicorn
+RUN pip install 'uvicorn[standard]
 
 CMD ["uvicorn", "redis_stream_reader:app", "--host", "0.0.0.0", "--port", "8000"]
