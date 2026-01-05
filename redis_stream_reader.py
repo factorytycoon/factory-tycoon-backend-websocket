@@ -70,8 +70,8 @@ class RedisStreamReader:
                         groupname=CONSUMER_GROUP,
                         consumername=CONSUMER_NAME,
                         streams={REDIS_STREAM_KEY: '>'},
-                        count=10,
-                        block=1000
+                        count=5,
+                        block=500
                     )
                 )
                 for stream, msgs in messages:
