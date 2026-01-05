@@ -11,15 +11,15 @@ from threading import Thread
 import json
 
 load_dotenv()
-REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
-REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+REDIS_HOST       = os.getenv('REDIS_HOST', 'localhost')
+REDIS_PORT       = int(os.getenv('REDIS_PORT', 6379))
+REDIS_PASSWORD   = os.getenv('REDIS_PASSWORD', None)
 REDIS_STREAM_KEY = os.getenv('REDIS_STREAM_KEY', 'mystream')
-CONSUMER_GROUP = os.getenv('CONSUMER_GROUP', 'mygroup')
-CONSUMER_NAME = os.getenv('CONSUMER_NAME', 'sensor-reader-1')
-WEBSOCKET_PATH = os.getenv('WEBSOCKET_PATH', '/ws')
-WEBSOCKET_HOST = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
-WEBSOCKET_PORT = int(os.getenv('WEBSOCKET_PORT', 8000))
+CONSUMER_GROUP   = os.getenv('CONSUMER_GROUP', 'mygroup')
+CONSUMER_NAME    = os.getenv('CONSUMER_NAME', 'sensor-reader-1')
+WEBSOCKET_PATH   = os.getenv('WEBSOCKET_PATH', '/ws')
+WEBSOCKET_HOST   = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
+WEBSOCKET_PORT   = int(os.getenv('WEBSOCKET_PORT', 8000))
 
 
 class ConnectionManager:
@@ -70,8 +70,8 @@ class RedisStreamReader:
                         groupname=CONSUMER_GROUP,
                         consumername=CONSUMER_NAME,
                         streams={REDIS_STREAM_KEY: '>'},
-                        count=10,
-                        block=5000
+                        count=20,
+                        block=1000
                     )
                 )
                 for stream, msgs in messages:
