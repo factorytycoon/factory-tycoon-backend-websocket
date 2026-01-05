@@ -70,7 +70,7 @@ class RedisStreamReader:
                         groupname=CONSUMER_GROUP,
                         consumername=CONSUMER_NAME,
                         streams={REDIS_STREAM_KEY: '>'},
-                        count=20,
+                        count=10,
                         block=1000
                     )
                 )
@@ -105,7 +105,13 @@ async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await asyncio.sleep(1)  # Keep the connection alive
+            try:
+                # 클라이언트 메시지 대기 (30초 타임아웃)
+                # 메시지가 오면 즉시 처리, 없으면 타임아웃 후 연결 유지
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # 연결 유지를 위한 ping 전송
+                await websocket.send_text(json.dumps({"type": "ping"}))
     except WebSocketDisconnect:
         manager.disconnect(websocket)
 
