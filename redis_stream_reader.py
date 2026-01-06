@@ -13,7 +13,9 @@ import json
 load_dotenv()
 REDIS_HOST       = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT       = int(os.getenv('REDIS_PORT', 6379))
-REDIS_PASSWORD   = os.getenv('REDIS_PASSWORD', None)
+REDIS_USERNAME   = os.getenv('REDIS_USERNAME', None)
+RAW_REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
+REDIS_PASSWORD   = RAW_REDIS_PASSWORD if RAW_REDIS_PASSWORD and RAW_REDIS_PASSWORD.strip() else None
 REDIS_CHANNEL    = os.getenv('REDIS_CHANNEL', 'sensor_data')  # Pub/Sub 채널로 변경
 WEBSOCKET_PATH   = os.getenv('WEBSOCKET_PATH', '/ws')
 WEBSOCKET_HOST   = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
@@ -42,7 +44,16 @@ class ConnectionManager:
 
 class RedisPubSubReader:
     def __init__(self, manager: ConnectionManager):
-        self.client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
+        client_kwargs = {
+            "host": REDIS_HOST,
+            "port": REDIS_PORT,
+            "decode_responses": True,
+        }
+        if REDIS_USERNAME:
+            client_kwargs["username"] = REDIS_USERNAME
+        if REDIS_PASSWORD:
+            client_kwargs["password"] = REDIS_PASSWORD
+        self.client = redis.Redis(**client_kwargs)
         self.manager = manager
         self.pubsub = self.client.pubsub()
 
@@ -85,7 +96,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 manager = ConnectionManager()
-reader = RedisStreamReader(manager)
+reader = RedisPubSubReader(manager)
 
 @app.get("/")
 async def root():
