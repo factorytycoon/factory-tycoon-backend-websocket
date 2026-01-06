@@ -14,9 +14,7 @@ load_dotenv()
 REDIS_HOST       = os.getenv('REDIS_HOST', 'localhost')
 REDIS_PORT       = int(os.getenv('REDIS_PORT', 6379))
 REDIS_PASSWORD   = os.getenv('REDIS_PASSWORD', None)
-REDIS_STREAM_KEY = os.getenv('REDIS_STREAM_KEY', 'mystream')
-CONSUMER_GROUP   = os.getenv('CONSUMER_GROUP', 'mygroup')
-CONSUMER_NAME    = os.getenv('CONSUMER_NAME', 'sensor-reader-1')
+REDIS_CHANNEL    = os.getenv('REDIS_CHANNEL', 'sensor_data')  # Pub/Sub 채널로 변경
 WEBSOCKET_PATH   = os.getenv('WEBSOCKET_PATH', '/ws')
 WEBSOCKET_HOST   = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
 WEBSOCKET_PORT   = int(os.getenv('WEBSOCKET_PORT', 8000))
@@ -42,43 +40,36 @@ class ConnectionManager:
                 pass
 
 
-class RedisStreamReader:
+class RedisPubSubReader:
     def __init__(self, manager: ConnectionManager):
         self.client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, password=REDIS_PASSWORD, decode_responses=True)
         self.manager = manager
-        self._create_consumer_group()
-
-    def _create_consumer_group(self):
-        try:
-            self.client.xgroup_create(name=REDIS_STREAM_KEY, groupname=CONSUMER_GROUP, id='0', mkstream=True)
-        except redis.exceptions.ResponseError as e:
-            if 'BUSYGROUP' in str(e):
-                print("already exists consumer group")
-                pass  # 이미 그룹이 있으면 무시
-            else:
-                raise
+        self.pubsub = self.client.pubsub()
 
     async def listen(self):
-        print(f"Listening to Redis stream '{REDIS_STREAM_KEY}' as group '{CONSUMER_GROUP}'...")
+        print(f"Subscribing to Redis Pub/Sub channel '{REDIS_CHANNEL}'...")
         loop = asyncio.get_event_loop()
+        
+        # 채널 구독 (블로킹 없이)
+        await loop.run_in_executor(None, self.pubsub.subscribe, REDIS_CHANNEL)
+        print(f"Subscribed to channel '{REDIS_CHANNEL}'")
+        
         while True:
             try:
-                # 블로킹 호출을 스레드로 실행
-                messages = await loop.run_in_executor(
+                # get_message()를 비동기로 실행
+                message = await loop.run_in_executor(
                     None,
-                    lambda: self.client.xreadgroup(
-                        groupname=CONSUMER_GROUP,
-                        consumername=CONSUMER_NAME,
-                        streams={REDIS_STREAM_KEY: '>'},
-                        count=100,  # 한 번에 100개까지 읽기 (2 -> 100)
-                        block=100    # 대기 시간 단축 (100ms -> 50ms)
-                    )
+                    lambda: self.pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
                 )
-                for stream, msgs in messages:
-                    for msg_id, msg in msgs:
-                        print(f"Received: {msg}")
-                        await self.manager.broadcast(json.dumps(msg))
-                        self.client.xack(REDIS_STREAM_KEY, CONSUMER_GROUP, msg_id)
+                
+                if message and message['type'] == 'message':
+                    data = message['data']
+                    print(f"Received: {data}")
+                    await self.manager.broadcast(data)
+                else:
+                    # 메시지가 없으면 잠시 대기
+                    await asyncio.sleep(0.01)
+                    
             except Exception as e:
                 print(f"Error: {e}")
                 await asyncio.sleep(2)
@@ -101,7 +92,7 @@ async def root():
     return {"status": "ok"}
 
 @app.websocket(WEBSOCKET_PATH)
-async def websocket_endpoint(websocket: WebSocket):
+async def websPubSubendpoint(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
