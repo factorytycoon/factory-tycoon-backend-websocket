@@ -70,8 +70,8 @@ class RedisStreamReader:
                         groupname=CONSUMER_GROUP,
                         consumername=CONSUMER_NAME,
                         streams={REDIS_STREAM_KEY: '>'},
-                        count=2,
-                        block=100
+                        count=100,  # 한 번에 100개까지 읽기 (2 -> 100)
+                        block=100    # 대기 시간 단축 (100ms -> 50ms)
                     )
                 )
                 for stream, msgs in messages:
