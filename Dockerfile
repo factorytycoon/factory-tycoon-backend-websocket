@@ -3,7 +3,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-COPY redis_stream_reader.py ./
+COPY main.py ./
 
 # 필요시 requirements.txt 사용
 # COPY requirements.txt ./
@@ -12,4 +12,4 @@ COPY redis_stream_reader.py ./
 RUN pip install redis python-dotenv fastapi uvicorn
 RUN pip install 'uvicorn[standard]'
 
-CMD ["uvicorn", "redis_stream_reader:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
