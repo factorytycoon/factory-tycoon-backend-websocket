@@ -16,23 +16,27 @@ REDIS_PORT       = int(os.getenv('REDIS_PORT', 6379))
 REDIS_USERNAME   = os.getenv('REDIS_USERNAME', None)
 RAW_REDIS_PASSWORD = os.getenv('REDIS_PASSWORD', None)
 REDIS_PASSWORD   = RAW_REDIS_PASSWORD if RAW_REDIS_PASSWORD and RAW_REDIS_PASSWORD.strip() else None
-REDIS_CHANNEL    = os.getenv('REDIS_CHANNEL', 'sensor_data')  # Pub/Sub 채널로 변경
+REDIS_CHANNEL    = os.getenv('REDIS_CHANNEL', 'sensor_data')  # 센서 데이터 채널
+REDIS_ALERT_CHANNEL = os.getenv('REDIS_ALERT_CHANNEL', 'alert_notifications')  # 알람 채널
 WEBSOCKET_PATH   = os.getenv('WEBSOCKET_PATH', '/ws')
 WEBSOCKET_HOST   = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
 WEBSOCKET_PORT   = int(os.getenv('WEBSOCKET_PORT', 8000))
 
 
 class ConnectionManager:
-    def __init__(self):
+    def __init__(self, name: str = "default"):
+        self.name = name
         self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
         self.active_connections.append(websocket)
+        print(f"[{self.name}] Client connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
+            print(f"[{self.name}] Client disconnected. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: str):
         for connection in self.active_connections:
@@ -43,7 +47,7 @@ class ConnectionManager:
 
 
 class RedisPubSubReader:
-    def __init__(self, manager: ConnectionManager):
+    def __init__(self, sensor_manager: ConnectionManager, alert_manager: ConnectionManager):
         client_kwargs = {
             "host": REDIS_HOST,
             "port": REDIS_PORT,
@@ -54,16 +58,17 @@ class RedisPubSubReader:
         if REDIS_PASSWORD:
             client_kwargs["password"] = REDIS_PASSWORD
         self.client = redis.Redis(**client_kwargs)
-        self.manager = manager
+        self.sensor_manager = sensor_manager
+        self.alert_manager = alert_manager
         self.pubsub = self.client.pubsub()
 
     async def listen(self):
         print(f"Subscribing to Redis Pub/Sub channel '{REDIS_CHANNEL}'...")
         loop = asyncio.get_event_loop()
         
-        # 채널 구독 (블로킹 없이)
-        await loop.run_in_executor(None, self.pubsub.subscribe, REDIS_CHANNEL)
-        print(f"Subscribed to channel '{REDIS_CHANNEL}'")
+        # 채널 구독 (센서 데이터 + 알람)
+        await loop.run_in_executor(None, self.pubsub.subscribe, REDIS_CHANNEL, REDIS_ALERT_CHANNEL)
+        print(f"Subscribed to channels: '{REDIS_CHANNEL}', '{REDIS_ALERT_CHANNEL}'")
         
         while True:
             try:
@@ -74,9 +79,16 @@ class RedisPubSubReader:
                 )
                 
                 if message and message['type'] == 'message':
+                    channel = message['channel']
                     data = message['data']
-                    print(f"Received: {data}")
-                    await self.manager.broadcast(data)
+                    
+                    # 채널에 따라 적절한 ConnectionManager로 브로드캐스트 (원본 데이터 그대로)
+                    if channel == REDIS_ALERT_CHANNEL:
+                        print(f"[ALERT] {data}")
+                        await self.alert_manager.broadcast(data)
+                    else:  # sensor_data 채널
+                        print(f"[SENSOR] {data}")
+                        await self.sensor_manager.broadcast(data)
                 else:
                     # 메시지가 없으면 잠시 대기
                     await asyncio.sleep(0.01)
@@ -95,27 +107,41 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
-manager = ConnectionManager()
-reader = RedisPubSubReader(manager)
+sensor_manager = ConnectionManager("sensor")
+alert_manager = ConnectionManager("alert")
+reader = RedisPubSubReader(sensor_manager, alert_manager)
 
 @app.get("/")
 async def root():
     return {"status": "ok"}
 
-@app.websocket(WEBSOCKET_PATH)
-async def websPubSubendpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+@app.websocket("/ws/sensor")
+async def sensor_websocket(websocket: WebSocket):
+    await sensor_manager.connect(websocket)
     try:
         while True:
             try:
                 # 클라이언트 메시지 대기 (30초 타임아웃)
-                # 메시지가 오면 즉시 처리, 없으면 타임아웃 후 연결 유지
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
             except asyncio.TimeoutError:
                 # 연결 유지를 위한 ping 전송
                 await websocket.send_text(json.dumps({"type": "ping"}))
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        sensor_manager.disconnect(websocket)
+
+@app.websocket("/ws/alert")
+async def alert_websocket(websocket: WebSocket):
+    await alert_manager.connect(websocket)
+    try:
+        while True:
+            try:
+                # 클라이언트 메시지 대기 (30초 타임아웃)
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+            except asyncio.TimeoutError:
+                # 연결 유지를 위한 ping 전송
+                await websocket.send_text(json.dumps({"type": "ping"}))
+    except WebSocketDisconnect:
+        alert_manager.disconnect(websocket)
 
 
 
