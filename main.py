@@ -48,8 +48,15 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections[websocket]["factoryId"] = factoryId
             if equipmentIds:
-                self.active_connections[websocket]["equipmentIds"] = set(equipmentIds)
-            print(f"[{self.name}] {websocket} subscribed to factory={factoryId}, equipment={equipmentIds}")
+                # 모든 equipmentId를 int로 변환하여 set에 저장
+                try:
+                    self.active_connections[websocket]["equipmentIds"] = {int(eid) for eid in equipmentIds}
+                    print(f"[{self.name}] Subscription updated - factory={factoryId}, equipment IDs (as int)={self.active_connections[websocket]['equipmentIds']}")
+                except (ValueError, TypeError) as e:
+                    print(f"[{self.name}] Error converting equipment IDs to int: {e}, storing as-is")
+                    self.active_connections[websocket]["equipmentIds"] = set(equipmentIds)
+            else:
+                print(f"[{self.name}] No equipment IDs provided, subscription for factory={factoryId} only")
 
     async def broadcast(self, message: str):
         """모든 클라이언트에게 브로드캐스트"""
@@ -65,7 +72,9 @@ class ConnectionManager:
             data = json.loads(message)
             msg_equipment_id = data.get("equipmentId")
             
-            print(f"[{self.name}] Broadcasting message with equipmentId: {msg_equipment_id}")
+            print(f"[{self.name}] ===== FILTERING BROADCAST =====")
+            print(f"[{self.name}] Message equipmentId: {msg_equipment_id} (type: {type(msg_equipment_id)})")
+            print(f"[{self.name}] Full message data: {data}")
             print(f"[{self.name}] Active connections: {len(self.active_connections)}")
             
             # 연결이 없으면 로깅만 하고 종료
@@ -73,10 +82,14 @@ class ConnectionManager:
                 print(f"[{self.name}] No active connections to send to")
                 return
             
+            sent_count = 0
+            
             for connection, subscription in self.active_connections.items():
                 try:
                     # 구독 정보 디버깅 출력
-                    print(f"[{self.name}] Checking connection subscription: factoryId={subscription['factoryId']}, equipmentIds={subscription['equipmentIds']}")
+                    print(f"[{self.name}] Checking connection:")
+                    print(f"  - factoryId: {subscription['factoryId']}")
+                    print(f"  - equipmentIds: {subscription['equipmentIds']} (type: {type(subscription['equipmentIds'])})")
                     
                     # 구독 정보가 없으면 모든 메시지 수신 (하위 호환성)
                     # OR 구독한 설비 목록이 있고 msg_equipment_id가 그 중에 있으면 전송
@@ -88,19 +101,39 @@ class ConnectionManager:
                         should_send = True
                     elif subscription["equipmentIds"]:
                         # 구독한 설비 목록이 있음
-                        if msg_equipment_id and msg_equipment_id in subscription["equipmentIds"]:
-                            print(f"[{self.name}] Equipment {msg_equipment_id} matches subscription, sending")
-                            should_send = True
-                        else:
-                            print(f"[{self.name}] Equipment {msg_equipment_id} not in {subscription['equipmentIds']}, skipping")
+                        # 타입 변환하여 비교 (int로 통일)
+                        try:
+                            msg_eq_id_int = int(msg_equipment_id) if msg_equipment_id is not None else None
+                            subscription_ids_int = {int(eid) for eid in subscription["equipmentIds"]}
+                            
+                            print(f"[{self.name}] Comparing: {msg_eq_id_int} in {subscription_ids_int}")
+                            
+                            if msg_eq_id_int and msg_eq_id_int in subscription_ids_int:
+                                print(f"[{self.name}] ✓ Equipment {msg_eq_id_int} MATCHES subscription!")
+                                should_send = True
+                            else:
+                                print(f"[{self.name}] ✗ Equipment {msg_eq_id_int} NOT in {subscription_ids_int}")
+                        except (ValueError, TypeError) as e:
+                            print(f"[{self.name}] Type conversion error: {e}, checking with original types")
+                            # 타입 변환 실패 시 원본으로 비교
+                            if msg_equipment_id in subscription["equipmentIds"]:
+                                print(f"[{self.name}] ✓ Equipment {msg_equipment_id} MATCHES (original type)!")
+                                should_send = True
                     
                     if should_send:
                         await connection.send_text(message)
-                        print(f"[{self.name}] Message sent successfully")
+                        sent_count += 1
+                        print(f"[{self.name}] ✓ Message sent successfully")
+                    else:
+                        print(f"[{self.name}] ✗ Message NOT sent (no match)")
                         
                 except Exception as e:
                     print(f"[{self.name}] Error sending to connection: {e}")
-                    pass
+                    import traceback
+                    traceback.print_exc()
+                    
+            print(f"[{self.name}] ===== SENT TO {sent_count}/{len(self.active_connections)} CONNECTIONS =====")
+                    
         except json.JSONDecodeError as e:
             print(f"[{self.name}] JSON decode error: {e}, broadcasting to all")
             # JSON 파싱 실패 시 모든 클라이언트에게 브로드캐스트
