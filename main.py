@@ -26,24 +26,56 @@ WEBSOCKET_PORT   = int(os.getenv('WEBSOCKET_PORT', 8000))
 class ConnectionManager:
     def __init__(self, name: str = "default"):
         self.name = name
-        self.active_connections: list[WebSocket] = []
+        self.active_connections: dict[WebSocket, dict] = {}  # WebSocket -> 구독 정보
 
     async def connect(self, websocket: WebSocket):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[websocket] = {
+            "factoryId": None,
+            "equipmentIds": set()
+        }
         print(f"[{self.name}] Client connected. Total: {len(self.active_connections)}")
 
     def disconnect(self, websocket: WebSocket):
         if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
+            del self.active_connections[websocket]
             print(f"[{self.name}] Client disconnected. Total: {len(self.active_connections)}")
 
+    async def subscribe(self, websocket: WebSocket, factoryId: int = None, equipmentIds: list = None):
+        """클라이언트의 구독 정보 업데이트"""
+        if websocket in self.active_connections:
+            self.active_connections[websocket]["factoryId"] = factoryId
+            if equipmentIds:
+                self.active_connections[websocket]["equipmentIds"] = set(equipmentIds)
+            print(f"[{self.name}] {websocket} subscribed to factory={factoryId}, equipment={equipmentIds}")
+
     async def broadcast(self, message: str):
-        for connection in self.active_connections:
+        """모든 클라이언트에게 브로드캐스트"""
+        for connection in self.active_connections.keys():
             try:
                 await connection.send_text(message)
             except Exception:
                 pass
+
+    async def broadcast_filtered(self, message: str, equipment_id: int = None):
+        """필터링된 브로드캐스트 (특정 설비/공장만)"""
+        try:
+            data = json.loads(message)
+            msg_equipment_id = data.get("equipmentId")
+            
+            for connection, subscription in self.active_connections.items():
+                try:
+                    # 구독 정보가 없으면 모든 메시지 수신 (하위 호환성)
+                    if not subscription["factoryId"] and not subscription["equipmentIds"]:
+                        await connection.send_text(message)
+                    # 구독한 설비 중 하나면 전송
+                    elif msg_equipment_id in subscription["equipmentIds"]:
+                        await connection.send_text(message)
+                except Exception:
+                    pass
+        except json.JSONDecodeError:
+            # JSON 파싱 실패 시 모든 클라이언트에게 브로드캐스트
+            await self.broadcast(message)
 
 
 class RedisPubSubReader:
@@ -85,7 +117,8 @@ class RedisPubSubReader:
                     # 채널에 따라 적절한 ConnectionManager로 브로드캐스트 (원본 데이터 그대로)
                     if channel == REDIS_ALERT_CHANNEL:
                         print(f"[ALERT] {data}")
-                        await self.alert_manager.broadcast(data)
+                        # 알람 데이터에서 equipmentId 추출하여 필터링된 브로드캐스트
+                        await self.alert_manager.broadcast_filtered(data)
                     else:  # sensor_data 채널
                         print(f"[SENSOR] {data}")
                         await self.sensor_manager.broadcast(data)
@@ -137,6 +170,18 @@ async def alert_websocket(websocket: WebSocket):
             try:
                 # 클라이언트 메시지 대기 (30초 타임아웃)
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                
+                # 구독 정보 처리
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "subscribe":
+                        factoryId = msg.get("factoryId")
+                        equipmentIds = msg.get("equipmentIds", [])
+                        await alert_manager.subscribe(websocket, factoryId, equipmentIds)
+                        print(f"[ALERT] Subscribed: factoryId={factoryId}, equipmentIds={equipmentIds}")
+                except json.JSONDecodeError:
+                    pass
+                    
             except asyncio.TimeoutError:
                 # 연결 유지를 위한 ping 전송
                 await websocket.send_text(json.dumps({"type": "ping"}))
