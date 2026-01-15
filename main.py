@@ -21,6 +21,8 @@ REDIS_ALERT_CHANNEL = os.getenv('REDIS_ALERT_CHANNEL', 'alert_notifications')  #
 WEBSOCKET_PATH   = os.getenv('WEBSOCKET_PATH', '/ws')
 WEBSOCKET_HOST   = os.getenv('WEBSOCKET_HOST', '0.0.0.0')
 WEBSOCKET_PORT   = int(os.getenv('WEBSOCKET_PORT', 8000))
+# 필터링 모드: 'filter' = 필터링 활성화, 'broadcast' = 모든 클라이언트에게 전송 (테스트용)
+ALERT_FILTER_MODE = os.getenv('ALERT_FILTER_MODE', 'broadcast')  # 기본값은 모든 클라이언트에게 전송
 
 
 class ConnectionManager:
@@ -63,17 +65,44 @@ class ConnectionManager:
             data = json.loads(message)
             msg_equipment_id = data.get("equipmentId")
             
+            print(f"[{self.name}] Broadcasting message with equipmentId: {msg_equipment_id}")
+            print(f"[{self.name}] Active connections: {len(self.active_connections)}")
+            
+            # 연결이 없으면 로깅만 하고 종료
+            if not self.active_connections:
+                print(f"[{self.name}] No active connections to send to")
+                return
+            
             for connection, subscription in self.active_connections.items():
                 try:
+                    # 구독 정보 디버깅 출력
+                    print(f"[{self.name}] Checking connection subscription: factoryId={subscription['factoryId']}, equipmentIds={subscription['equipmentIds']}")
+                    
                     # 구독 정보가 없으면 모든 메시지 수신 (하위 호환성)
+                    # OR 구독한 설비 목록이 있고 msg_equipment_id가 그 중에 있으면 전송
+                    should_send = False
+                    
                     if not subscription["factoryId"] and not subscription["equipmentIds"]:
+                        # 구독 정보 없음 = 모든 메시지 수신
+                        print(f"[{self.name}] No subscription info, sending to all")
+                        should_send = True
+                    elif subscription["equipmentIds"]:
+                        # 구독한 설비 목록이 있음
+                        if msg_equipment_id and msg_equipment_id in subscription["equipmentIds"]:
+                            print(f"[{self.name}] Equipment {msg_equipment_id} matches subscription, sending")
+                            should_send = True
+                        else:
+                            print(f"[{self.name}] Equipment {msg_equipment_id} not in {subscription['equipmentIds']}, skipping")
+                    
+                    if should_send:
                         await connection.send_text(message)
-                    # 구독한 설비 중 하나면 전송
-                    elif msg_equipment_id in subscription["equipmentIds"]:
-                        await connection.send_text(message)
-                except Exception:
+                        print(f"[{self.name}] Message sent successfully")
+                        
+                except Exception as e:
+                    print(f"[{self.name}] Error sending to connection: {e}")
                     pass
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as e:
+            print(f"[{self.name}] JSON decode error: {e}, broadcasting to all")
             # JSON 파싱 실패 시 모든 클라이언트에게 브로드캐스트
             await self.broadcast(message)
 
@@ -117,8 +146,15 @@ class RedisPubSubReader:
                     # 채널에 따라 적절한 ConnectionManager로 브로드캐스트 (원본 데이터 그대로)
                     if channel == REDIS_ALERT_CHANNEL:
                         print(f"[ALERT] {data}")
-                        # 알람 데이터에서 equipmentId 추출하여 필터링된 브로드캐스트
-                        await self.alert_manager.broadcast_filtered(data)
+                        print(f"[ALERT] Filter mode: {ALERT_FILTER_MODE}")
+                        # 필터링 모드에 따라 다르게 처리
+                        if ALERT_FILTER_MODE == 'filter':
+                            # 필터링된 브로드캐스트 (설비별로 필터링)
+                            await self.alert_manager.broadcast_filtered(data)
+                        else:
+                            # 모든 클라이언트에게 브로드캐스트 (필터링 없음)
+                            print(f"[ALERT] Broadcasting to all clients (no filtering)")
+                            await self.alert_manager.broadcast(data)
                     else:  # sensor_data 채널
                         print(f"[SENSOR] {data}")
                         await self.sensor_manager.broadcast(data)
@@ -165,11 +201,13 @@ async def sensor_websocket(websocket: WebSocket):
 @app.websocket("/ws/alert")
 async def alert_websocket(websocket: WebSocket):
     await alert_manager.connect(websocket)
+    print(f"[ALERT] New alert websocket connection")
     try:
         while True:
             try:
                 # 클라이언트 메시지 대기 (30초 타임아웃)
                 data = await asyncio.wait_for(websocket.receive_text(), timeout=30.0)
+                print(f"[ALERT] Received from client: {data}")
                 
                 # 구독 정보 처리
                 try:
@@ -179,14 +217,21 @@ async def alert_websocket(websocket: WebSocket):
                         equipmentIds = msg.get("equipmentIds", [])
                         await alert_manager.subscribe(websocket, factoryId, equipmentIds)
                         print(f"[ALERT] Subscribed: factoryId={factoryId}, equipmentIds={equipmentIds}")
-                except json.JSONDecodeError:
-                    pass
+                        # 구독 확인 메시지 전송
+                        await websocket.send_text(json.dumps({
+                            "type": "subscription_confirmed",
+                            "factoryId": factoryId,
+                            "equipmentIds": equipmentIds
+                        }))
+                except json.JSONDecodeError as e:
+                    print(f"[ALERT] JSON decode error: {e}")
                     
             except asyncio.TimeoutError:
                 # 연결 유지를 위한 ping 전송
                 await websocket.send_text(json.dumps({"type": "ping"}))
     except WebSocketDisconnect:
         alert_manager.disconnect(websocket)
+        print(f"[ALERT] Client disconnected")
 
 
 
